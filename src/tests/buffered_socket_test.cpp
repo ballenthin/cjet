@@ -35,6 +35,8 @@
 #include "buffered_socket.h"
 #include "eventloop.h"
 #include "generated/os_config.h"
+#include "tests/fff.h"
+DEFINE_FFF_GLOBALS;
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
@@ -76,289 +78,289 @@ static size_t readbuffer_length;
 
 extern "C" {
 
-	ssize_t socket_writev(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
-	{
-		switch (sock) {
-		case WRITEV_COMPLETE_WRITE: {
-			size_t complete_length = 0;
-			for (unsigned int i = 0; i < count; i++) {
-				memcpy(write_buffer_ptr, io_vec[i].iov_base, io_vec[i].iov_len);
-				complete_length += io_vec[i].iov_len;
-				write_buffer_ptr += io_vec[i].iov_len;
-			}
+FAKE_VALUE_FUNC(ssize_t, socket_writev, socket_type, struct socket_io_vector *, unsigned int);
+
+ssize_t fake_writev_complete_write(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	size_t complete_length = 0;
+	for (unsigned int i = 0; i < count; i++) {
+		memcpy(write_buffer_ptr, io_vec[i].iov_base, io_vec[i].iov_len);
+		complete_length += io_vec[i].iov_len;
+		write_buffer_ptr += io_vec[i].iov_len;
+	}
+	return complete_length;
+}
+
+ssize_t fake_writev_einval(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	(void)io_vec;
+	(void)count;
+
+	errno = EINVAL;
+	return -1;
+}
+
+ssize_t fake_writev_part_send_single_bytes_blocks(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	size_t complete_length = 0;
+	size_t parts_cnt = writev_parts_cnt;
+	for (unsigned int i = 0; i < count; i++) {
+		int will_write = MIN(io_vec[i].iov_len, parts_cnt);
+		memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
+		complete_length += will_write;
+		write_buffer_ptr += will_write;
+		parts_cnt -= will_write;
+		if (parts_cnt == 0) {
 			return complete_length;
 		}
+	}
+	return complete_length;
+}
 
-		case WRITEV_EINVAL:
-		{
+ssize_t fake_writev_send_parts_eventloop_send_fails(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	size_t complete_length = 0;
+	size_t parts_cnt;
+	if (first_writev) {
+		parts_cnt = writev_parts_cnt;
+		first_writev = false;
+	} else {
+		if (!called_from_eventloop) {
+			if (send_parts_counter < send_parts_cnt) {
+				parts_cnt = 1;
+				send_parts_counter++;
+			} else {
+				errno = EWOULDBLOCK;
+				return -1;
+			}
+		} else {
 			errno = EINVAL;
 			return -1;
 		}
-
-		case WRITEV_PART_SEND_SINGLE_BYTES:
-		case WRITEV_PART_SEND_BLOCKS:
-		{
-			size_t complete_length = 0;
-			size_t parts_cnt = writev_parts_cnt;
-			for (unsigned int i = 0; i < count; i++) {
-				int will_write = MIN(io_vec[i].iov_len, parts_cnt);
-				memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
-				complete_length += will_write;
-				write_buffer_ptr += will_write;
-				parts_cnt -= will_write;
-				if (parts_cnt == 0) {
-					return complete_length;
-				}
-			}
+	}
+	for (unsigned int i = 0; i < count; i++) {
+		int will_write = MIN(io_vec[i].iov_len, parts_cnt);
+		memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
+		complete_length += will_write;
+		write_buffer_ptr += will_write;
+		parts_cnt -= will_write;
+		if (parts_cnt == 0) {
 			return complete_length;
 		}
+	}
+	return complete_length;
+}
 
-		case WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_FAILS:
-		{
-			size_t complete_length = 0;
-			size_t parts_cnt;
-			if (first_writev) {
-				parts_cnt = writev_parts_cnt;
-				first_writev = false;
+ssize_t fake_writev_send_parts_eventloop_send_rest(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	size_t complete_length = 0;
+	size_t parts_cnt;
+	if (first_writev) {
+		parts_cnt = writev_parts_cnt;
+		first_writev = false;
+	} else {
+		if (!called_from_eventloop) {
+			if (send_parts_counter < send_parts_cnt) {
+				parts_cnt = 1;
+				send_parts_counter++;
 			} else {
-				if (!called_from_eventloop) {
-					if (send_parts_counter < send_parts_cnt) {
-						parts_cnt = 1;
-						send_parts_counter++;
-					} else {
-						errno = EWOULDBLOCK;
-						return -1;
-					}
-				} else {
-					errno = EINVAL;
-					return -1;
-				}
-			}
-			for (unsigned int i = 0; i < count; i++) {
-				int will_write = MIN(io_vec[i].iov_len, parts_cnt);
-				memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
-				complete_length += will_write;
-				write_buffer_ptr += will_write;
-				parts_cnt -= will_write;
-				if (parts_cnt == 0) {
-					return complete_length;
-				}
-			}
-			return complete_length;
-		}
-
-		case WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_REST:
-		{
-			size_t complete_length = 0;
-			size_t parts_cnt;
-			if (first_writev) {
-				parts_cnt = writev_parts_cnt;
-				first_writev = false;
-			} else {
-				if (!called_from_eventloop) {
-					if (send_parts_counter < send_parts_cnt) {
-						parts_cnt = 1;
-						send_parts_counter++;
-					} else {
-						errno = EWOULDBLOCK;
-						return -1;
-					}
-				} else {
-					parts_cnt = 1;
-				}
-			}
-			for (unsigned int i = 0; i < count; i++) {
-				int will_write = MIN(io_vec[i].iov_len, parts_cnt);
-				memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
-				complete_length += will_write;
-				write_buffer_ptr += will_write;
-				parts_cnt -= will_write;
-				if (parts_cnt == 0) {
-					return complete_length;
-				}
-			}
-			return complete_length;
-		}
-
-		case WRITEV_PART_SEND_FAILS:
-		{
-			if (first_writev) {
-				first_writev = false;
-				size_t complete_length = 0;
-				size_t parts_cnt = writev_parts_cnt;
-				for (unsigned int i = 0; i < count; i++) {
-					int will_write = MIN(io_vec[i].iov_len, parts_cnt);
-					memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
-					complete_length += will_write;
-					write_buffer_ptr += will_write;
-					parts_cnt -= will_write;
-					if (parts_cnt == 0) {
-						return complete_length;
-					}
-				}
-				return complete_length;
-			} else {
-				errno = EINVAL;
+				errno = EWOULDBLOCK;
 				return -1;
 			}
+		} else {
+			parts_cnt = 1;
 		}
-
-		case WRITEV_PART_SEND_PARTS:
-		{
-			size_t complete_length = 0;
-			size_t parts_cnt;
-			if (first_writev) {
-				parts_cnt = writev_parts_cnt;
-				first_writev = false;
-			} else {
-				if (send_parts_counter < send_parts_cnt) {
-					parts_cnt = 1;
-					send_parts_counter++;
-				} else {
-					errno = EWOULDBLOCK;
-					return -1;
-				}
-			}
-			for (unsigned int i = 0; i < count; i++) {
-				int will_write = MIN(io_vec[i].iov_len, parts_cnt);
-				memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
-				complete_length += will_write;
-				write_buffer_ptr += will_write;
-				parts_cnt -= will_write;
-				if (parts_cnt == 0) {
-					return complete_length;
-				}
-			}
+	}
+	for (unsigned int i = 0; i < count; i++) {
+		int will_write = MIN(io_vec[i].iov_len, parts_cnt);
+		memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
+		complete_length += will_write;
+		write_buffer_ptr += will_write;
+		parts_cnt -= will_write;
+		if (parts_cnt == 0) {
 			return complete_length;
 		}
+	}
+	return complete_length;
+}
 
-		case WRITEV_BLOCKS:
-		{
+ssize_t fake_writev_part_send_fails(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	if (first_writev) {
+		first_writev = false;
+		size_t complete_length = 0;
+		size_t parts_cnt = writev_parts_cnt;
+		for (unsigned int i = 0; i < count; i++) {
+			int will_write = MIN(io_vec[i].iov_len, parts_cnt);
+			memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
+			complete_length += will_write;
+			write_buffer_ptr += will_write;
+			parts_cnt -= will_write;
+			if (parts_cnt == 0) {
+				return complete_length;
+			}
+		}
+		return complete_length;
+	} else {
+		errno = EINVAL;
+		return -1;
+	}
+}
+
+ssize_t fake_writev_part_send_parts(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	size_t complete_length = 0;
+	size_t parts_cnt;
+	if (first_writev) {
+		parts_cnt = writev_parts_cnt;
+		first_writev = false;
+	} else {
+		if (send_parts_counter < send_parts_cnt) {
+			parts_cnt = 1;
+			send_parts_counter++;
+		} else {
 			errno = EWOULDBLOCK;
 			return -1;
 		}
-		default:
-			return 0;
+	}
+	for (unsigned int i = 0; i < count; i++) {
+		int will_write = MIN(io_vec[i].iov_len, parts_cnt);
+		memcpy(write_buffer_ptr, io_vec[i].iov_base, will_write);
+		complete_length += will_write;
+		write_buffer_ptr += will_write;
+		parts_cnt -= will_write;
+		if (parts_cnt == 0) {
+			return complete_length;
+		}
+	}
+	return complete_length;
+}
+
+ssize_t fake_writev_blocks(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
+{
+	(void)sock;
+	(void)io_vec;
+	(void)count;
+	errno = EWOULDBLOCK;
+	return -1;
+}
+
+ssize_t socket_read(socket_type sock, void *buf, size_t count)
+{
+	switch (sock) {
+	case READ_UNTIL_IN_CALLBACK:
+	case READ_COMPLETE_BUFFER: {
+		if (readbuffer_length > 0) {
+			size_t len = MIN(readbuffer_length, count);
+			memcpy(buf, readbuffer_ptr, len);
+			readbuffer_length -= len;
+			readbuffer_ptr += len;
+			return len;
+		} else {
+			errno = EWOULDBLOCK;
+			return -1;
 		}
 	}
 
-	ssize_t socket_read(socket_type sock, void *buf, size_t count)
-	{
-		switch (sock) {
-		case READ_UNTIL_IN_CALLBACK:
-		case READ_COMPLETE_BUFFER:
-		{
+	case READ_FULL: {
+		if (read_called == 0) {
+			read_called++;
+			memset(buf, 'a', count);
+			return count;
+		} else if (read_called == 1) {
+			read_called++;
+			memset(buf, 'b', count);
+			return count;
+		} else {
+			errno = EWOULDBLOCK;
+			return -1;
+		}
+	}
+
+	case READ_EXACTLY_IN_CALLBACK: {
+		if (read_called == 0) {
+			read_called++;
+			memset(buf, 'a', 4);
+			return 4;
+		} else if (read_called == 1) {
+			read_called++;
+			memset(buf, 'b', 2);
+			return 2;
+		} else {
+			errno = EWOULDBLOCK;
+			return -1;
+		}
+	}
+
+	case READ_FROM_EVENTLOOP: {
+		if (read_called == 0) {
+			read_called++;
+			errno = EWOULDBLOCK;
+			return -1;
+		} else {
 			if (readbuffer_length > 0) {
 				size_t len = MIN(readbuffer_length, count);
-				memcpy(buf, readbuffer_ptr, len);
 				readbuffer_length -= len;
-				readbuffer_ptr += len;
+				memcpy(buf, readbuffer, len);
 				return len;
 			} else {
 				errno = EWOULDBLOCK;
 				return -1;
 			}
 		}
+	}
 
-		case READ_FULL:
-		{
-			if (read_called == 0) {
-				read_called++;
-				memset(buf, 'a', count);
-				return count;
-			} else if (read_called == 1) {
-				read_called++;
-				memset(buf, 'b', count);
-				return count;
-			} else {
-				errno = EWOULDBLOCK;
-				return -1;
-			}
-		}
-
-		case READ_EXACTLY_IN_CALLBACK:
-		{
-			if (read_called == 0) {
-				read_called++;
-				memset(buf, 'a', 4);
-				return 4;
-			} else if (read_called == 1) {
-				read_called++;
-				memset(buf, 'b', 2);
-				return 2;
-			} else {
-				errno = EWOULDBLOCK;
-				return -1;
-			}
-		}
-
-		case READ_FROM_EVENTLOOP:
-		{
-			if (read_called == 0) {
-				read_called++;
-				errno = EWOULDBLOCK;
-				return -1;
-			} else  {
-				if (readbuffer_length > 0) {
-					size_t len = MIN(readbuffer_length, count);
-					readbuffer_length -= len;
-					memcpy(buf, readbuffer, len);
-					return len;
-				} else {
-					errno = EWOULDBLOCK;
-					return -1;
-				}
-			}
-		}
-			
-		case READ_CLOSE_FROM_EVENTLOOP:
-		{
-			if (read_called == 0) {
-				read_called++;
-				errno = EWOULDBLOCK;
-				return -1;
-			} else  {
-				return 0;
-			}
-		}
-
-		case READ_FROM_EVENTLOOP_FAIL:
-		{
-			if (read_called == 0) {
-				read_called++;
-				errno = EWOULDBLOCK;
-				return -1;
-			} else if (read_called == 1) {
-				read_called++;
-				errno = EINVAL;
-				return -1;
-			} else {
-				errno = EWOULDBLOCK;
-				return -1;
-			}
-		}
-
-		case READ_CLOSE:
-		{
+	case READ_CLOSE_FROM_EVENTLOOP: {
+		if (read_called == 0) {
+			read_called++;
+			errno = EWOULDBLOCK;
+			return -1;
+		} else {
 			return 0;
 		}
+	}
 
-		case READ_ERROR:
-		{
+	case READ_FROM_EVENTLOOP_FAIL: {
+		if (read_called == 0) {
+			read_called++;
+			errno = EWOULDBLOCK;
+			return -1;
+		} else if (read_called == 1) {
+			read_called++;
 			errno = EINVAL;
 			return -1;
-		}
-
-		default:
+		} else {
+			errno = EWOULDBLOCK;
 			return -1;
 		}
 	}
-	
-	int socket_close(socket_type sock)
-	{
-		(void)sock;
+
+	case READ_CLOSE: {
 		return 0;
 	}
+
+	case READ_ERROR: {
+		errno = EINVAL;
+		return -1;
+	}
+
+	default:
+		return -1;
+	}
+}
+
+int socket_close(socket_type sock)
+{
+	(void)sock;
+	return 0;
+}
 }
 
 static enum eventloop_return eventloop_fake_add(const void *this_ptr, const struct io_event *ev)
@@ -408,6 +410,8 @@ struct F {
 		readcallback_called = 0;
 		error_func_called = false;
 		error_func_alt_called = false;
+
+		RESET_FAKE(socket_writev);
 	}
 
 	static void error_func(void *context)
@@ -458,7 +462,9 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev)
 	static const char *send_buffer = "Morning has broken";
 	static const size_t first_chunk_size = 8;
 
-	F f(WRITEV_COMPLETE_WRITE);
+	F f(0);
+
+	socket_writev_fake.custom_fake = fake_writev_complete_write;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -475,7 +481,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_inval)
 	static const char *send_buffer = "foobar";
 	static const size_t first_chunk_size = 2;
 
-	F f(WRITEV_EINVAL);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_einval;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -488,12 +495,12 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_inval)
 
 BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks)
 {
-	F f(WRITEV_PART_SEND_BLOCKS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	writev_parts_cnt = 4;
 	static const char *send_buffer = "HelloWorld";
 	static const size_t first_chunk_size = 6;
-
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
 	vec[0].iov_len = first_chunk_size;
@@ -507,7 +514,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks)
 
 BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks_first_chunk_smaller_than_part)
 {
-	F f(WRITEV_PART_SEND_BLOCKS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	writev_parts_cnt = 8;
 	static const char *send_buffer = "I want to break free";
@@ -529,7 +537,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks)
 	static const char *send_buffer = "In the ghetto";
 	static const size_t first_chunk_size = 7;
 
-	F f(WRITEV_BLOCKS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -545,7 +554,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks_buffer_too_small)
 {
 	char buffer[CONFIG_MAX_WRITE_BUFFER_SIZE + 1];
 
-	F f(WRITEV_BLOCKS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[1];
 	vec[0].iov_base = buffer;
@@ -558,7 +568,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks_buffer_fits)
 {
 	char buffer[CONFIG_MAX_WRITE_BUFFER_SIZE] = {0};
 
-	F f(WRITEV_BLOCKS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[1];
 	vec[0].iov_base = buffer;
@@ -574,7 +585,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_single)
 	static const size_t first_chunk_size = 9;
 	writev_parts_cnt = 7;
 
-	F f(WRITEV_PART_SEND_SINGLE_BYTES);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -593,7 +605,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts)
 	writev_parts_cnt = 1;
 	send_parts_cnt = 5;
 
-	F f(WRITEV_PART_SEND_PARTS);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_part_send_parts;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -614,6 +627,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_fails)
 	send_parts_cnt = 5;
 
 	F f(WRITEV_PART_SEND_FAILS);
+	socket_writev_fake.custom_fake = fake_writev_part_send_fails;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -631,7 +645,8 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts_eventloop_send
 	writev_parts_cnt = 2;
 	send_parts_cnt = 4;
 
-	F f(WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_REST);
+	F f(0);
+	socket_writev_fake.custom_fake = fake_writev_send_parts_eventloop_send_rest;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -657,6 +672,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts_eventloop_send
 	send_parts_cnt = 4;
 
 	F f(WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_FAILS);
+	socket_writev_fake.custom_fake = fake_writev_send_parts_eventloop_send_fails;
 
 	struct socket_io_vector vec[2];
 	vec[0].iov_base = send_buffer;
@@ -719,7 +735,7 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_called_twice)
 BOOST_AUTO_TEST_CASE(test_read_exactly_buffer_wrap)
 {
 	for (unsigned int chunk_size = 1; chunk_size <= CONFIG_MAX_MESSAGE_SIZE; chunk_size++) {
-		size_t chunks = (CONFIG_MAX_MESSAGE_SIZE / chunk_size) + 1; 
+		size_t chunks = (CONFIG_MAX_MESSAGE_SIZE / chunk_size) + 1;
 		char buffer[chunk_size * chunks];
 		::memset(buffer, 0, sizeof(buffer));
 		readbuffer_length = sizeof(buffer);
@@ -903,8 +919,8 @@ BOOST_AUTO_TEST_CASE(test_read_until_complete_buffer)
 {
 	char buffer[CONFIG_MAX_MESSAGE_SIZE];
 	::memset(buffer, 'a', sizeof(buffer));
-	buffer[CONFIG_MAX_MESSAGE_SIZE -2] = '\r';
-	buffer[CONFIG_MAX_MESSAGE_SIZE -1] = '\n';
+	buffer[CONFIG_MAX_MESSAGE_SIZE - 2] = '\r';
+	buffer[CONFIG_MAX_MESSAGE_SIZE - 1] = '\n';
 	readbuffer = buffer;
 	readbuffer_length = sizeof(buffer);
 	F f(READ_COMPLETE_BUFFER);
@@ -948,7 +964,7 @@ BOOST_AUTO_TEST_CASE(test_read_until_buffer_wrap_all_sizes)
 	const char *needle = "\r\n";
 	size_t needle_length = ::strlen(needle);
 	for (unsigned int chunk_size = needle_length; chunk_size <= CONFIG_MAX_MESSAGE_SIZE; chunk_size++) {
-		size_t chunks = (CONFIG_MAX_MESSAGE_SIZE / chunk_size) + 1; 
+		size_t chunks = (CONFIG_MAX_MESSAGE_SIZE / chunk_size) + 1;
 		char buffer[chunk_size * chunks];
 		::memset(buffer, 0, sizeof(buffer));
 		for (unsigned int j = 0; j < chunks; j++) {
