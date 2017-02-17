@@ -38,29 +38,14 @@
 #include "tests/fff.h"
 DEFINE_FFF_GLOBALS;
 
+#define FFF_FAKES_LIST(FAKE) \
+	FAKE(socket_writev)  \
+	FAKE(socket_read)
+
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
 
-static const int WRITEV_COMPLETE_WRITE = 1;
-static const int WRITEV_EINVAL = 2;
-static const int WRITEV_PART_SEND_BLOCKS = 3;
-static const int WRITEV_BLOCKS = 4;
-static const int WRITEV_PART_SEND_SINGLE_BYTES = 5;
-static const int WRITEV_PART_SEND_PARTS = 6;
-static const int WRITEV_PART_SEND_FAILS = 7;
-static const int WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_REST = 8;
-static const int WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_FAILS = 9;
-
-static const int READ_COMPLETE_BUFFER = 10;
-static const int READ_FULL = 11;
-static const int READ_CLOSE = 12;
-static const int READ_ERROR = 13;
-static const int READ_EXACTLY_IN_CALLBACK = 14;
-static const int READ_FAILING_EV_ADD = 15;
-static const int READ_FROM_EVENTLOOP = 16;
-static const int READ_FROM_EVENTLOOP_FAIL = 17;
-static const int READ_UNTIL_IN_CALLBACK = 18;
-static const int READ_CLOSE_FROM_EVENTLOOP = 19;
+static const int ARBITRARY_FD = 1;
 
 static char write_buffer[5000];
 static char *write_buffer_ptr;
@@ -79,6 +64,7 @@ static size_t readbuffer_length;
 extern "C" {
 
 FAKE_VALUE_FUNC(ssize_t, socket_writev, socket_type, struct socket_io_vector *, unsigned int);
+FAKE_VALUE_FUNC(ssize_t, socket_read, socket_type, void *, size_t);
 
 ssize_t fake_writev_complete_write(socket_type sock, struct socket_io_vector *io_vec, unsigned int count)
 {
@@ -252,108 +238,118 @@ ssize_t fake_writev_blocks(socket_type sock, struct socket_io_vector *io_vec, un
 	return -1;
 }
 
-ssize_t socket_read(socket_type sock, void *buf, size_t count)
+ssize_t fake_socket_read_until_in_callback_complete_buffer(socket_type sock, void *buf, size_t count)
 {
-	switch (sock) {
-	case READ_UNTIL_IN_CALLBACK:
-	case READ_COMPLETE_BUFFER: {
+	(void)sock;
+	if (readbuffer_length > 0) {
+		size_t len = MIN(readbuffer_length, count);
+		memcpy(buf, readbuffer_ptr, len);
+		readbuffer_length -= len;
+		readbuffer_ptr += len;
+		return len;
+	} else {
+		errno = EWOULDBLOCK;
+		return -1;
+	}
+}
+
+ssize_t fake_socket_read_full(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	if (read_called == 0) {
+		read_called++;
+		memset(buf, 'a', count);
+		return count;
+	} else if (read_called == 1) {
+		read_called++;
+		memset(buf, 'b', count);
+		return count;
+	} else {
+		errno = EWOULDBLOCK;
+		return -1;
+	}
+}
+
+ssize_t fake_socket_read_exactly_in_callback(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	(void)count;
+	if (read_called == 0) {
+		read_called++;
+		memset(buf, 'a', 4);
+		return 4;
+	} else if (read_called == 1) {
+		read_called++;
+		memset(buf, 'b', 2);
+		return 2;
+	} else {
+		errno = EWOULDBLOCK;
+		return -1;
+	}
+}
+
+ssize_t fake_socket_read_from_eventloop(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	if (read_called == 0) {
+		read_called++;
+		errno = EWOULDBLOCK;
+		return -1;
+	} else {
 		if (readbuffer_length > 0) {
 			size_t len = MIN(readbuffer_length, count);
-			memcpy(buf, readbuffer_ptr, len);
 			readbuffer_length -= len;
-			readbuffer_ptr += len;
+			memcpy(buf, readbuffer, len);
 			return len;
 		} else {
 			errno = EWOULDBLOCK;
 			return -1;
 		}
 	}
+}
 
-	case READ_FULL: {
-		if (read_called == 0) {
-			read_called++;
-			memset(buf, 'a', count);
-			return count;
-		} else if (read_called == 1) {
-			read_called++;
-			memset(buf, 'b', count);
-			return count;
-		} else {
-			errno = EWOULDBLOCK;
-			return -1;
-		}
-	}
+ssize_t fake_socket_read_close_from_eventloop(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	(void)buf;
+	(void)count;
 
-	case READ_EXACTLY_IN_CALLBACK: {
-		if (read_called == 0) {
-			read_called++;
-			memset(buf, 'a', 4);
-			return 4;
-		} else if (read_called == 1) {
-			read_called++;
-			memset(buf, 'b', 2);
-			return 2;
-		} else {
-			errno = EWOULDBLOCK;
-			return -1;
-		}
-	}
-
-	case READ_FROM_EVENTLOOP: {
-		if (read_called == 0) {
-			read_called++;
-			errno = EWOULDBLOCK;
-			return -1;
-		} else {
-			if (readbuffer_length > 0) {
-				size_t len = MIN(readbuffer_length, count);
-				readbuffer_length -= len;
-				memcpy(buf, readbuffer, len);
-				return len;
-			} else {
-				errno = EWOULDBLOCK;
-				return -1;
-			}
-		}
-	}
-
-	case READ_CLOSE_FROM_EVENTLOOP: {
-		if (read_called == 0) {
-			read_called++;
-			errno = EWOULDBLOCK;
-			return -1;
-		} else {
-			return 0;
-		}
-	}
-
-	case READ_FROM_EVENTLOOP_FAIL: {
-		if (read_called == 0) {
-			read_called++;
-			errno = EWOULDBLOCK;
-			return -1;
-		} else if (read_called == 1) {
-			read_called++;
-			errno = EINVAL;
-			return -1;
-		} else {
-			errno = EWOULDBLOCK;
-			return -1;
-		}
-	}
-
-	case READ_CLOSE: {
+	if (read_called == 0) {
+		read_called++;
+		errno = EWOULDBLOCK;
+		return -1;
+	} else {
 		return 0;
 	}
+}
 
-	case READ_ERROR: {
+ssize_t fake_socket_read_from_eventloop_fail(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	(void)buf;
+	(void)count;
+
+	if (read_called == 0) {
+		read_called++;
+		errno = EWOULDBLOCK;
+		return -1;
+	} else if (read_called == 1) {
+		read_called++;
 		errno = EINVAL;
 		return -1;
-	}
-
-	default:
+	} else {
+		errno = EWOULDBLOCK;
 		return -1;
 	}
+}
+
+ssize_t fake_socket_read_error(socket_type sock, void *buf, size_t count)
+{
+	(void)sock;
+	(void)buf;
+	(void)count;
+	errno = EINVAL;
+	return -1;
 }
 
 int socket_close(socket_type sock)
@@ -384,19 +380,16 @@ static void eventloop_fake_remove(const void *this_ptr, const struct io_event *e
 }
 
 struct F {
-	F(int fd)
+	F()
 	{
 		loop.init = NULL;
 		loop.destroy = NULL;
 		loop.run = NULL;
-		if (fd == READ_FAILING_EV_ADD) {
-			loop.add = eventloop_fake_failing_add;
-		} else {
-			loop.add = eventloop_fake_add;
-		}
+		loop.add = eventloop_fake_add;
+
 		loop.remove = eventloop_fake_remove;
 		bs = buffered_socket_acquire();
-		buffered_socket_init(bs, fd, &loop, error_func, this);
+		buffered_socket_init(bs, ARBITRARY_FD, &loop, error_func, this);
 		bs->write_buffer_ptr = NULL;
 		bs->read_callback = NULL;
 		bs->read_callback_context = NULL;
@@ -411,7 +404,7 @@ struct F {
 		error_func_called = false;
 		error_func_alt_called = false;
 
-		RESET_FAKE(socket_writev);
+		FFF_FAKES_LIST(RESET_FAKE);
 	}
 
 	static void error_func(void *context)
@@ -432,12 +425,36 @@ struct F {
 		memcpy(f->read_buffer, buf, len);
 		f->read_len = len;
 		f->readcallback_called++;
+
+		/*
 		if (f->bs->ev.sock == READ_EXACTLY_IN_CALLBACK) {
 			buffered_socket_read_exactly(f->bs, 2, read_callback, f);
 		} else if (f->bs->ev.sock == READ_UNTIL_IN_CALLBACK) {
 			buffered_socket_read_until(f->bs, "\n\r", read_callback, f);
-		}
+		}*/
 		return BS_OK;
+	}
+
+	static enum bs_read_callback_return read_callback_read_exactly_in_callback(void *context, uint8_t *buf, size_t len)
+	{
+		struct F *f = (struct F *)context;
+		bs_read_callback_return return_value = read_callback(context, buf, len);
+		buffered_socket_read_exactly(f->bs, 2, read_callback, f);
+
+		return return_value;
+	}
+
+	static enum bs_read_callback_return read_callback_read_until_in_callback(void *context, uint8_t *buf, size_t len)
+	{
+		struct F *f = (struct F *)context;
+		bs_read_callback_return return_value = read_callback(context, buf, len);
+		buffered_socket_read_until(f->bs, "\n\r", read_callback, f);
+		return return_value;
+	}
+
+	void set_loop_fake_failing_add()
+	{
+		this->loop.add = eventloop_fake_failing_add;
 	}
 
 	~F()
@@ -462,8 +479,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev)
 	static const char *send_buffer = "Morning has broken";
 	static const size_t first_chunk_size = 8;
 
-	F f(0);
-
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_complete_write;
 
 	struct socket_io_vector vec[2];
@@ -481,7 +497,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_inval)
 	static const char *send_buffer = "foobar";
 	static const size_t first_chunk_size = 2;
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_einval;
 
 	struct socket_io_vector vec[2];
@@ -495,7 +511,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_inval)
 
 BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks)
 {
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	writev_parts_cnt = 4;
@@ -514,7 +530,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks)
 
 BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_part_send_blocks_first_chunk_smaller_than_part)
 {
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	writev_parts_cnt = 8;
@@ -537,7 +553,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks)
 	static const char *send_buffer = "In the ghetto";
 	static const size_t first_chunk_size = 7;
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[2];
@@ -554,7 +570,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks_buffer_too_small)
 {
 	char buffer[CONFIG_MAX_WRITE_BUFFER_SIZE + 1];
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[1];
@@ -568,7 +584,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_blocks_buffer_fits)
 {
 	char buffer[CONFIG_MAX_WRITE_BUFFER_SIZE] = {0};
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_blocks;
 
 	struct socket_io_vector vec[1];
@@ -585,7 +601,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_single)
 	static const size_t first_chunk_size = 9;
 	writev_parts_cnt = 7;
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_part_send_single_bytes_blocks;
 
 	struct socket_io_vector vec[2];
@@ -605,7 +621,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts)
 	writev_parts_cnt = 1;
 	send_parts_cnt = 5;
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_part_send_parts;
 
 	struct socket_io_vector vec[2];
@@ -626,7 +642,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_fails)
 	writev_parts_cnt = 1;
 	send_parts_cnt = 5;
 
-	F f(WRITEV_PART_SEND_FAILS);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_part_send_fails;
 
 	struct socket_io_vector vec[2];
@@ -645,7 +661,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts_eventloop_send
 	writev_parts_cnt = 2;
 	send_parts_cnt = 4;
 
-	F f(0);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_send_parts_eventloop_send_rest;
 
 	struct socket_io_vector vec[2];
@@ -671,7 +687,7 @@ BOOST_AUTO_TEST_CASE(test_buffered_socket_writev_parts_send_parts_eventloop_send
 	writev_parts_cnt = 2;
 	send_parts_cnt = 4;
 
-	F f(WRITEV_PART_SEND_PARTS_EVENTLOOP_SEND_FAILS);
+	F f;
 	socket_writev_fake.custom_fake = fake_writev_send_parts_eventloop_send_fails;
 
 	struct socket_io_vector vec[2];
@@ -694,9 +710,10 @@ BOOST_AUTO_TEST_CASE(test_read_exactly)
 {
 	readbuffer = "aaaa";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
 
-	int ret = buffered_socket_read_exactly(f.bs, 4, f.read_callback, &f);
+	int ret = buffered_socket_read_exactly(f.bs, 4, f.read_callback_read_until_in_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 1);
 	BOOST_CHECK(f.read_len = 4);
@@ -708,7 +725,8 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_some_more)
 {
 	readbuffer = "aaaaa";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
 
 	int ret = buffered_socket_read_exactly(f.bs, 4, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -722,7 +740,8 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_called_twice)
 {
 	readbuffer = "aaaabbbb";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
 
 	int ret = buffered_socket_read_exactly(f.bs, 4, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -739,7 +758,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_buffer_wrap)
 		char buffer[chunk_size * chunks];
 		::memset(buffer, 0, sizeof(buffer));
 		readbuffer_length = sizeof(buffer);
-		F f(READ_COMPLETE_BUFFER);
+		F f;
+		socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 		int ret = buffered_socket_read_exactly(f.bs, chunk_size, f.read_callback, &f);
 		BOOST_CHECK(ret == 0);
 		BOOST_CHECK(f.readcallback_called == chunks);
@@ -748,7 +769,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_buffer_wrap)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_nearly_complete_buffer)
 {
-	F f(READ_FULL);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_full;
+
 	size_t read_size = CONFIG_MAX_MESSAGE_SIZE - 1;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -763,7 +786,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_nearly_complete_buffer)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_complete_buffer)
 {
-	F f(READ_FULL);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_full;
+
 	size_t read_size = CONFIG_MAX_MESSAGE_SIZE;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -777,7 +802,8 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_complete_buffer)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_more_than_buffer)
 {
-	F f(READ_FULL);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_full;
 	size_t read_size = CONFIG_MAX_MESSAGE_SIZE + 1;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == -1);
@@ -785,7 +811,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_more_than_buffer)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_read_close)
 {
-	F f(READ_CLOSE);
+	F f;
+	socket_read_fake.return_val = 0;
+
 	size_t read_size = 4;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == -1);
@@ -795,7 +823,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_close)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_read_error)
 {
-	F f(READ_ERROR);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_error;
+
 	size_t read_size = 4;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == -1);
@@ -804,16 +834,21 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_error)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_read_in_callback)
 {
-	F f(READ_EXACTLY_IN_CALLBACK);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_exactly_in_callback;
+
 	size_t read_size = 4;
-	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
+	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback_read_exactly_in_callback, &f);
 	BOOST_CHECK(ret == 0);
-	BOOST_CHECK(f.readcallback_called == 2);
+	BOOST_CHECK_MESSAGE(f.readcallback_called == 2, "Readcallback should be 2, but was: " << f.readcallback_called);
 }
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_failing_ev_add)
 {
-	F f(READ_FAILING_EV_ADD);
+	F f;
+	f.set_loop_fake_failing_add();
+	socket_read_fake.return_val = -1;
+
 	size_t read_size = 4;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret < 0);
@@ -824,7 +859,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_from_eventloop)
 {
 	readbuffer = "aaaa";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_FROM_EVENTLOOP);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_from_eventloop;
+
 	int ret = buffered_socket_read_exactly(f.bs, ::strlen(readbuffer), f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 0);
@@ -838,7 +875,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_close_from_eventloop)
 {
 	readbuffer = "aaaa";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_CLOSE_FROM_EVENTLOOP);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_close_from_eventloop;
+
 	int ret = buffered_socket_read_exactly(f.bs, ::strlen(readbuffer), f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 0);
@@ -850,7 +889,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_close_from_eventloop)
 
 BOOST_AUTO_TEST_CASE(test_read_exactly_read_from_eventloop_fail)
 {
-	F f(READ_FROM_EVENTLOOP_FAIL);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_from_eventloop_fail;
+
 	size_t read_size = 4;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -865,7 +906,9 @@ BOOST_AUTO_TEST_CASE(test_read_exactly_read_from_eventloop_fail)
 
 BOOST_AUTO_TEST_CASE(test_set_alternate_error_function)
 {
-	F f(READ_FROM_EVENTLOOP_FAIL);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_from_eventloop_fail;
+
 	size_t read_size = 4;
 	int ret = buffered_socket_read_exactly(f.bs, read_size, f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
@@ -883,7 +926,9 @@ BOOST_AUTO_TEST_CASE(test_read_until)
 {
 	readbuffer = "ccccc\r\ndd";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 1);
@@ -895,7 +940,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_pattern_at_begin)
 {
 	readbuffer = "\r\ndd";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 1);
@@ -907,7 +954,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_twice)
 {
 	readbuffer = "eee\r\nffffff\r\n";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 2);
@@ -923,7 +972,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_complete_buffer)
 	buffer[CONFIG_MAX_MESSAGE_SIZE - 1] = '\n';
 	readbuffer = buffer;
 	readbuffer_length = sizeof(buffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 1);
@@ -936,7 +987,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_more_than_buffer)
 	const char buffer[CONFIG_MAX_MESSAGE_SIZE + 1] = {0};
 	readbuffer = buffer;
 	readbuffer_length = sizeof(buffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == -1);
 }
@@ -953,7 +1006,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_buffer_wrap)
 	buffer[CONFIG_MAX_MESSAGE_SIZE + 7] = '\n';
 	readbuffer = buffer;
 	readbuffer_length = sizeof(buffer);
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 2);
@@ -975,7 +1030,9 @@ BOOST_AUTO_TEST_CASE(test_read_until_buffer_wrap_all_sizes)
 		}
 		readbuffer = buffer;
 		readbuffer_length = sizeof(buffer);
-		F f(READ_COMPLETE_BUFFER);
+		F f;
+		socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
 		int ret = buffered_socket_read_until(f.bs, needle, f.read_callback, &f);
 		BOOST_CHECK(ret == 0);
 		BOOST_CHECK(f.readcallback_called == chunks);
@@ -984,7 +1041,10 @@ BOOST_AUTO_TEST_CASE(test_read_until_buffer_wrap_all_sizes)
 
 BOOST_AUTO_TEST_CASE(test_read_until_failing_ev_add)
 {
-	F f(READ_FAILING_EV_ADD);
+	F f;
+	f.set_loop_fake_failing_add();
+	socket_read_fake.return_val = -1;
+
 	int ret = buffered_socket_read_until(f.bs, "bla", f.read_callback, &f);
 	BOOST_CHECK(ret < 0);
 	BOOST_CHECK(f.readcallback_called == 0);
@@ -994,8 +1054,10 @@ BOOST_AUTO_TEST_CASE(test_read_until_read_in_callback)
 {
 	readbuffer = "foo\r\nbar\n\r";
 	readbuffer_length = ::strlen(readbuffer);
-	F f(READ_UNTIL_IN_CALLBACK);
-	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback, &f);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
+
+	int ret = buffered_socket_read_until(f.bs, "\r\n", f.read_callback_read_until_in_callback, &f);
 	BOOST_CHECK(ret == 0);
 	BOOST_CHECK(f.readcallback_called == 2);
 	BOOST_CHECK(f.read_len == 5);
@@ -1004,7 +1066,8 @@ BOOST_AUTO_TEST_CASE(test_read_until_read_in_callback)
 
 BOOST_AUTO_TEST_CASE(test_close)
 {
-	F f(READ_COMPLETE_BUFFER);
+	F f;
+	socket_read_fake.custom_fake = fake_socket_read_until_in_callback_complete_buffer;
 	int ret = buffered_socket_close(f.bs);
 	f.bs = NULL;
 	BOOST_CHECK(ret == 0);
